@@ -4,14 +4,64 @@ import pygame
 from collections import deque
 from src.utils import Button
 from matplotlib import cm
+from os import path
+
+explosion_anim = {}
+explosion_anim['lg'] = []
+explosion_anim['sm'] = []
+
+class Balloon(pygame.sprite.Sprite):
+    def __init__(self):
+        pygame.sprite.Sprite.__init__(self)
+        filename = 'balloon.png'
+        img = pygame.image.load(path.join('src/', filename)).convert()
+        img.set_colorkey((0,0,0))
+        self.image = pygame.transform.scale(img, (30, 71))
+        self.coords = [5,35]
+        self.color = (255,0,0,0)
+        self.rect = self.image.get_rect()
+        self.rect.center = [self.coords[0]*20, self.coords[1]]
+        self.frame_rate = 50
+
+    def update(self):
+        self.rect.center = [self.coords[0]*20, self.coords[1]]
+
+#explosion code from https://kidscancode.org/blog/2016/09/pygame_shmup_part_10/
+class Explosion(pygame.sprite.Sprite):
+    def __init__(self, center, size):
+        pygame.sprite.Sprite.__init__(self)
+        self.size = size
+        self.image = explosion_anim[self.size][0]
+        self.rect = self.image.get_rect()
+        self.rect.center = center
+        self.frame = 0
+        self.last_update = pygame.time.get_ticks()
+        self.frame_rate = 50
+
+    def update(self):
+        now = pygame.time.get_ticks()
+        if now - self.last_update > self.frame_rate:
+            self.last_update = now
+            self.frame += 1
+            if self.frame == len(explosion_anim[self.size]):
+                self.kill()
+            else:
+                center = self.rect.center
+                self.image = explosion_anim[self.size][self.frame]
+                self.rect = self.image.get_rect()
+                self.rect.center = center
 
 class Spectrum_Visualizer:
     """
     The Spectrum_Visualizer visualizes spectral FFT data using a simple PyGame GUI
     """
     def __init__(self, ear):
+        self.mixer = pygame.mixer
         self.plot_audio_history = True
         self.ear = ear
+        self.nextDraw = 0
+        self.frames = 0
+        self.pops = pygame.sprite.Group()
 
         self.HEIGHT  = self.ear.height
         window_ratio = self.ear.window_ratio
@@ -103,6 +153,21 @@ class Spectrum_Visualizer:
                 self.bin_rectangles.append(textRect)
 
         self._is_running = True
+        self.mixer.init()
+        self.mixer.music.load('src/ping.mp3')
+        self.mixer.music.set_volume(0.7)
+
+        for i in range(9):
+            filename = 'regularExplosion0{}.png'.format(i)
+            img = pygame.image.load(path.join('src/', filename)).convert()
+            img.set_colorkey((0,0,0))
+            img_lg = pygame.transform.scale(img, (75, 75))
+            explosion_anim['lg'].append(img_lg)
+            img_sm = pygame.transform.scale(img, (32, 32))
+            explosion_anim['sm'].append(img_sm)
+
+        self.balloon = Balloon()
+        self.pops.add(self.balloon)
 
         #Interactive components:
         self.button_height = round(0.05*self.HEIGHT)
@@ -159,15 +224,21 @@ class Spectrum_Visualizer:
             self.fps = self.fps_interval / (time.time()-self.start_time)
             self.start_time = time.time()
 
-        self.text = self.fps_font.render('Fps: %.1f' %(self.fps), True, (255, 255, 255) , (self.bg_color, self.bg_color, self.bg_color))
-        self.textRect = self.text.get_rect()
-        self.textRect.x, self.textRect.y = round(0.015*self.WIDTH), round(0.03*self.HEIGHT)
+        # self.text = self.fps_font.render('Fps: %.1f' %(self.fps), True, (255, 255, 255) , (self.bg_color, self.bg_color, self.bg_color))
+        # self.textRect = self.text.get_rect()
+        # self.textRect.x, self.textRect.y = round(0.015*self.WIDTH), round(0.03*self.HEIGHT)
         pygame.display.set_caption('Spectrum Analyzer -- (FFT-Peak: %05d Hz)' %self.ear.strongest_frequency)
 
         self.plot_bars()
 
+        # if self.frames >= self.nextDraw:
+        #     pygame.draw.circle(self.screen, self.balloon.color, [self.balloon.coords[0]*20, self.balloon.coords[1]], 15, 99)
+
+        self.pops.draw(self.screen)
+        self.pops.update()
+
         #Draw text tags:
-        self.screen.blit(self.text, self.textRect)
+        # self.screen.blit(self.text, self.textRect)
         if len(self.bin_text_tags) > 0:
             cnt = 0
             for i in range(self.ear.n_frequency_bins):
@@ -181,12 +252,17 @@ class Spectrum_Visualizer:
         self.slow_bar_button.draw(self.screen)
 
         pygame.display.flip()
+        self.frames += 1
 
 
     def plot_bars(self):
         bars, slow_bars, new_slow_features = [], [], []
         local_height = self.y_ext[1] - self.y_ext[0]
         feature_values = self.frequency_bin_energies[::-1]
+
+        popped = False
+        # print(popped)
+        # print(len(self.frequency_bin_energies))
 
         for i in range(len(self.frequency_bin_energies)):
             feature_value = feature_values[i] * local_height
@@ -203,10 +279,30 @@ class Spectrum_Visualizer:
                 self.slow_bars[i][1] = int(self.fast_bars[i][1] + slow_feature_value)
                 self.slow_bars[i][3] = int(self.slow_bar_thickness * local_height)
 
+        maxz = 0
+        # print(self.frames,self.nextDraw)
         if self.add_fast_bars:
+            self.popped = False
             for i, fast_bar in enumerate(self.fast_bars):
                 # print(i,self.fast_bar_colors[i])
+                # if not popped and abs((400-fast_bar[0])-(400-self.balloon.coords[0]*20)) < 20:
+                #     print([self.balloon.coords[0]*20, self.balloon.coords[1]], fast_bar)
+
+                if self.frames >= self.nextDraw and not popped and abs((400-fast_bar[0])-(400-self.balloon.coords[0]*20)) < 20 and fast_bar[3] >= 300:
+                    expl = Explosion([self.balloon.coords[0]*20,self.balloon.coords[1]], 'lg')
+                    self.pops.add(expl)
+                    self.balloon.coords = [int(np.random.randint(1,49)),self.balloon.coords[1]]
+                    popped = True
+                    self.mixer.music.play()
+                    self.nextDraw = self.frames+60
+
+                # if i==100:
+                #     fast_bar[3] = 400
                 pygame.draw.rect(self.screen,self.fast_bar_colors[i],fast_bar,0)
+            
+            maxz = max(maxz, fast_bar[0])
+        
+        # print(maxz)
 
         if self.plot_audio_history:
                 self.prev_screen = self.screen.copy().convert_alpha()
